@@ -1,0 +1,54 @@
+Pyspark Query for Autoloader in Databricks notebook:
+
+Reading the Files:
+
+df = spark.readStream.format("cloudFiles")\
+  .option("cloudFiles.format", "csv")\
+  .option("cloudFiles.schemaLocation", "/Volumes/workspace/bronze/bronzevolume/bookings/checkpoint")\
+  .option("cloudFiles.schemaEvolutionMode", "rescue")\
+  .load("/Volumes/workspace/raw/rawvolume/rawdata/bookings/")
+
+
+Writing the files into bronze layer from autoloader:
+
+df.writeStream.format("delta")\
+    .outputMode("append")\
+    .trigger(once=True)\
+    .option("checkpointLocation", "/Volumes/workspace/bronze/bronzevolume/bookings/checkpoint")\
+    .option("path", "/Volumes/workspace/bronze/bronzevolume/bookings/data")\
+    .start()
+
+
+These commands are used to load the newest data that arrives day by day.
+
+To view the updated data.
+
+SELECT * FROM  delta.`/Volumes/workspace/bronze/bronzevolume/bookings/data`
+
+To make it dynamic we can use widgets so that we can build a reusable autoloader.
+
+dbutils.widgets.text("src","")
+
+Verification of what source is.
+
+src_value = dbutils.widgets.get("src")
+src_value
+
+
+To check the data:
+
+Select * from delta.`/Volumes/workspace/bronze/bronzevolume/bookings/data`
+
+
+Create a new notebook for source parameters. Create an array for source parameters.
+
+src_array = [
+        {"src" : "bookings"},
+        {"src" : "airports"},
+        {"src" : "customers"},
+        {"src" : "flights"}       
+]
+
+To run source step by step for each source:
+
+dbutils.jobs.taskValues.set(key="output_key", value=src_array)
