@@ -1,0 +1,26 @@
+End to end Data Engineering project using Azure cloud, Databricks, pyspark with madellion architecture.
+
+First need to find the data source, Autoloader is used to load data into ETL pipeline. In Medallion Architecture we use three storage containers name bronze, silver and gold layers. 
+The raw data is directly store in Bronze layer, the raw data is converted into Delta live tables and stored in silver layer, schema is developed and data is transformed into business readable formats and stored in gold layer. Finally the data is sent to warehouse.
+
+Autoloader is data lake which built on top of spark structure streaming. each and every day we get data from multiple sources stored in the auto loader.
+
+Bronze Layer: Dynamic solution using parametering parsing and control flow and databricks jobs.
+Creating deployable notebooks.
+
+Silver Layer: Use Lakeflow declarative pipelines (old version DLT), Pyspark, functions calling.
+
+Gold Layer: Schemas, Star Schema Builder, Slowly Changing Dimensions, Fact tables. Reusable notebooks.
+
+Once gold layer is ready warehouse is created for out-sourcing.
+
+
+Databricks Free edition.
+
+Unity catalog is the are where we can see all the workspace.
+
+Unity metastore is able to access data from external sources.
+
+Creating a schema in Databricks unity catalog, later creating a volume in the schema where it is a kind of query or view which helps governing the files. Inside volumes we create some folders for the data to store. We can upload the data from on premises into allocated files. 
+
+Autoloader: Creating the autoloader notebook.
