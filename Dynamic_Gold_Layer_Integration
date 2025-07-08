@@ -1,0 +1,129 @@
+Widgets:
+
+#Catalog Name
+Catalog = "workspace"
+
+#Key_cols_list
+Key_cols = "['flight_id']"
+key_cols_list = eval(Key_cols)
+
+#CDC column
+cdc_col = "modifieddate"
+
+#Backdated refresh
+backdate_drefresh = ""
+
+#Source Object
+source_object = "silver_flights"
+
+#Source Schema
+source_schema = "silver"
+
+#Target Schema
+target_schema = "gold"
+
+#Target Object
+target_object = "flights"
+
+
+
+Create a Backdated Refresh and check if table exists in the destination.
+
+if  len(backdate_drefresh) == 0:
+
+  if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+      
+      last_load = spark.sql(f"select max({cdc_col}) from {target_schema}.{target_object}").collect()[0][0]
+  else:
+        last_load = "1900-01-01 00:00:00"
+
+else:
+  last_load = backdate_drefresh
+
+last_load
+
+
+Source of the data:
+
+df_src = spark.sql(f"select * from {source_schema}.{source_object} where {cdc_col} >= '{last_load}'")
+
+
+
+
+From here we create an empty table with all the attributes required by adding surrogate keys to it and all the transformed or modified attributes and use the join table with the table that we obtain in the silver layer.
+
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+
+  key_cols_string = ", ".join(key_cols_list)
+  df_trg = spark.sql(f"SELECT {key_cols_string}, {surrogate_key}, create_date, update_date FROM {catalog}.{target_schema}.{target_object}")
+else:
+    key_cols_string_init = [f"'' AS {i}" for i in key_cols_list]
+    key_cols_string_init = ", ".join(key_cols_string_init)
+
+    df_trg = spark.sql(f"SELECT {key_cols_string_init}, '' AS {surrogate_key},'' AS create_date,'' AS update_date WHERE 1=0")
+
+
+Using the joining conditions and the source table and the target table which is empty, perform left join so that we can get the values required into the target table.
+
+
+
+df_src.createOrReplaceTempView("src")
+df_trg.createOrReplaceTempView("trg")
+
+df_join = spark.sql(f"""
+          SELECT src.*,
+                 trg.{surrogate_key},
+                 trg.create_date,
+                 trg.update_date
+          FROM src
+          LEFT JOIN trg
+          ON {join_condition}
+          """)
+
+
+By using join we have created a table and we use surrogate key as dim key and gave the value as null. By this if there is a value for the dim key then it is the old record and if key value is null those are new records.
+
+By comparing the old and new tables and write the code for the incremental data ingesting and surrogate key column to the table, Assigning surrogate keys to the records.
+
+
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+
+#Old Records
+df_old = df_join.filter(col(f"{surrogate_key}").isNotNull())
+
+#New Records
+df_new = df_join.filter(col(f"{surrogate_key}").isNull())
+df_old.display()
+df_new.display()
+
+Here we are trying to get surrogate keys for the records if they already exists in the table else assigning a new surrogate values for the new records.
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+    max_surrogate_key = spark.sql(f"SELECT MAX({surrogate_key}) FROM {catalog}.{target_schema}.{target_object}").collect()[0][0]
+
+else:
+    max_surrograte_key = 1
+    df_new = df_new.withColumn(f'{surrogate_key}', lit(max_surrogate_key)+lit(1)+monotonically_ increasing_id())\
+        .withColumn("create_date", current_timestamp())\
+        .withColumn("update_date", current_timestamp())
+df_new.display()
+df_old_enr.display( )
+
+
+upsert: update and insert.
+
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+    dlt_obj = DeltaTable.forName(spark, f"/Volumes/workspace/gold/goldvolume/{target_object}")
+    dlt_obj.alias("trg").merge(df_union.alias("src"), f"trg.{surrogate_key} = src.{surrogate_key}")\
+        .whenMatchedUpdateAll(condition = f"src.{cdc_column} >= trg.{cdc_column}")\
+        .whenNotMatchedInsertAll()\
+        .execute()
+else:
+    df_union.write.format("delta")\
+        .mode("append")\
+        .saveAsTable(f"{catalog}.{target_schema}.{target_object}")
+
+
