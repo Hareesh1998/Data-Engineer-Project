@@ -1,0 +1,125 @@
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from delta.tables import DeltaTable
+
+#Catalog Name
+catalog = "workspace"
+
+#Key_cols_list
+Key_cols = "['flight_id']"
+key_cols_list = eval(Key_cols)
+
+#CDC column
+cdc_col = "modifieddate"
+
+#Backdated refresh
+backdate_drefresh = ""
+
+#Source Object
+source_object = "silver_flights"
+
+#Source Schema
+source_schema = "silver"
+
+#Target Schema
+target_schema = "gold"
+
+#Target Object
+target_object = "dimflights"
+
+# Surrogate Key 
+surrogate_key = "dimflightskey"
+
+key_cols_list
+
+
+if  len(backdate_drefresh) == 0:
+  if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+      
+      last_load = spark.sql(f"select max({cdc_col}) from {target_schema}.{target_object}").collect()[0][0]
+  else:
+        last_load = "1900-01-01 00:00:00"
+
+else:
+  last_load = backdate_drefresh
+
+    
+last_load
+
+
+key_cols_string = ", ".join(key_cols_list)
+spark.sql(f"select {key_cols_string} from {source_schema}.{source_object}")
+
+spark.sql(f"select '' As flight_id, '' As dimflightskey, '1900-01-01 00:00:00' As create_date, '1900-01-01 00:00:00' As update_date from workspace.silver.silver_flights").display()
+
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+
+  key_cols_string = ", ".join(key_cols_list)
+  df_trg = spark.sql(f"SELECT {key_cols_string}, {surrogate_key}, create_date, update_date FROM {catalog}.{target_schema}.{target_object}")
+else:
+    key_cols_string_init = [f"'' AS {i}" for i in key_cols_list]
+    key_cols_string_init = ", ".join(key_cols_string_init)
+
+    df_trg = spark.sql(f"SELECT {key_cols_string_init}, CAST('0' AS INT) AS {surrogate_key},CAST('1900-01-01 00:00:00' AS TIMESTAMP) AS create_date,CAST('1900-01-01 00:00:00' AS TIMESTAMP) AS update_date WHERE 1=0")
+  
+df_trg.display()
+
+
+df_src.createOrReplaceTempView("src")
+df_trg.createOrReplaceTempView("trg")
+
+df_join = spark.sql(f"""
+          SELECT src.*,
+                 trg.{surrogate_key},
+                 trg.create_date,
+                 trg.update_date
+          FROM src
+          LEFT JOIN trg
+          ON {join_condition}
+          """)
+
+df_join.display()
+
+
+#Old Records
+df_old = df_join.filter(col(f"{surrogate_key}").isNotNull())
+
+#New Records
+df_new = df_join.filter(col(f"{surrogate_key}").isNull())
+df_old.display()
+df_new.display()
+
+
+df_old_enr = df_old.withColumn("update_date", current_timestamp())
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+    max_surrogate_key = spark.sql(f"SELECT MAX({surrogate_key}) FROM {catalog}.{target_schema}.{target_object}").collect()[0][0]
+    df_new_enr = df_new.withColumn(f'{surrogate_key}', lit(max_surrogate_key)+lit(1)+monotonically_increasing_id())\
+        .withColumn("create_date", current_timestamp())\
+        .withColumn("update_date", current_timestamp())
+
+else:
+    max_surrogate_key = 0
+    df_new_enr = df_new.withColumn(f'{surrogate_key}', lit(max_surrogate_key)+lit(1)+monotonically_increasing_id())\
+        .withColumn("create_date", current_timestamp())\
+        .withColumn("update_date", current_timestamp())
+df_new_enr.display()
+
+
+df_union = df_old_enr.unionByName(df_new_enr)
+df_union.display()
+
+if spark.catalog.tableExists(f"{catalog}.{target_schema}.{target_object}"):
+    dlt_obj = DeltaTable.forName(spark, f"{catalog}.{target_schema}.{target_object}")
+    dlt_obj.alias("trg").merge(df_union.alias("src"), f"trg.{surrogate_key} = src.{surrogate_key}")\
+        .whenMatchedUpdateAll(condition = f"src.{cdc_col} >= trg.{cdc_col}")\
+        .whenNotMatchedInsertAll()\
+        .execute()
+else:
+    df_union.write.format("delta")\
+        .mode("append")\
+        .saveAsTable(f"{catalog}.{target_schema}.{target_object}")
+
+%sql
+select * from workspace.gold.dimflights
